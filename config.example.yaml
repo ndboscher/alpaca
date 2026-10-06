@@ -1,0 +1,53 @@
+# zdte-bot configuration. `setup` copies this to config.yaml — edit config.yaml, not this file.
+# All times are US/Eastern (market time) in 24h HH:MM.
+
+# Underlyings to trade. These all list options that expire every trading day.
+symbols: [SPY, QQQ, IWM]
+
+# Safety switch. Even with ALPACA_PAPER=false in .env the bot refuses to trade
+# real money unless this is true.
+live_trading_confirmed: false
+
+# Market data feeds. Free Alpaca accounts must use "iex" (stocks) and "indicative" (options).
+# With a paid Algo Trader Plus subscription use "sip" and "opra".
+stock_feed: iex
+options_feed: indicative
+
+# How often the main loop runs, in seconds.
+poll_seconds: 15
+
+schedule:
+  opening_range_minutes: 15   # build the opening range from the first N minutes
+  no_new_entries_after: "14:30"
+  flatten_at: "15:30"         # close everything this bot holds, no matter what
+
+strategy:
+  # Opening range breakout: buy calls when price closes above the range high,
+  # puts when it closes below the range low.
+  breakout_buffer_pct: 0.05   # % beyond the range edge required to count as a breakout
+  require_vwap_confirm: true  # calls need price > VWAP, puts need price < VWAP
+  max_range_pct: 1.0          # skip a symbol if its opening range is wider than this % (choppy open)
+  max_entries_per_symbol: 1   # per day
+
+contracts:
+  target_delta: 0.40          # abs(delta) to aim for; falls back to strike distance if greeks are missing
+  max_strike_distance_pct: 1.5
+  min_premium: 0.30           # per-share price, i.e. $30 per contract
+  max_premium: 5.00
+  max_spread_pct: 10.0        # skip contracts whose bid/ask spread is wider than this % of mid
+
+risk:
+  max_position_usd: 500       # max premium spent on a single trade
+  max_contracts: 5
+  max_open_positions: 2
+  max_trades_per_day: 4
+  max_daily_loss_usd: 500     # stop opening trades (and flatten) once the account is down this much today
+  take_profit_pct: 50         # exit when option is up this % from entry
+  stop_loss_pct: 35           # exit when option is down this % from entry
+  trailing_activate_pct: 30   # once up this %, start trailing...
+  trailing_stop_pct: 20       # ...and exit if it falls this % from its high
+
+execution:
+  entry_slippage: 0.25        # limit price = mid + this fraction of (ask - mid); 1.0 = pay the ask
+  fill_timeout_seconds: 20    # cancel an unfilled entry after this long
+  use_market_orders_for_exits: true

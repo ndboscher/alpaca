@@ -1,0 +1,158 @@
+"""Configuration loading: secrets from .env, settings from config.yaml."""
+
+from __future__ import annotations
+
+import os
+from dataclasses import dataclass, field, fields, is_dataclass
+from datetime import time
+from pathlib import Path
+from typing import Any
+
+import yaml
+from dotenv import load_dotenv
+
+
+class ConfigError(Exception):
+    pass
+
+
+@dataclass
+class Schedule:
+    opening_range_minutes: int = 15
+    no_new_entries_after: time = time(14, 30)
+    flatten_at: time = time(15, 30)
+
+
+@dataclass
+class StrategyCfg:
+    breakout_buffer_pct: float = 0.05
+    require_vwap_confirm: bool = True
+    max_range_pct: float = 1.0
+    max_entries_per_symbol: int = 1
+
+
+@dataclass
+class ContractsCfg:
+    target_delta: float = 0.40
+    max_strike_distance_pct: float = 1.5
+    min_premium: float = 0.30
+    max_premium: float = 5.00
+    max_spread_pct: float = 10.0
+
+
+@dataclass
+class RiskCfg:
+    max_position_usd: float = 500
+    max_contracts: int = 5
+    max_open_positions: int = 2
+    max_trades_per_day: int = 4
+    max_daily_loss_usd: float = 500
+    take_profit_pct: float = 50
+    stop_loss_pct: float = 35
+    trailing_activate_pct: float = 30
+    trailing_stop_pct: float = 20
+
+
+@dataclass
+class ExecutionCfg:
+    entry_slippage: float = 0.25
+    fill_timeout_seconds: int = 20
+    use_market_orders_for_exits: bool = True
+
+
+@dataclass
+class Config:
+    api_key: str = ""
+    secret_key: str = ""
+    paper: bool = True
+    symbols: list[str] = field(default_factory=lambda: ["SPY", "QQQ", "IWM"])
+    live_trading_confirmed: bool = False
+    stock_feed: str = "iex"
+    options_feed: str = "indicative"
+    poll_seconds: int = 15
+    schedule: Schedule = field(default_factory=Schedule)
+    strategy: StrategyCfg = field(default_factory=StrategyCfg)
+    contracts: ContractsCfg = field(default_factory=ContractsCfg)
+    risk: RiskCfg = field(default_factory=RiskCfg)
+    execution: ExecutionCfg = field(default_factory=ExecutionCfg)
+
+
+def _parse_time(value: Any, name: str) -> time:
+    if isinstance(value, time):
+        return value
+    if isinstance(value, int):  # YAML 1.1 parses unquoted 14:30 as sexagesimal minutes
+        return time(value // 60, value % 60)
+    try:
+        hh, mm = str(value).split(":")
+        return time(int(hh), int(mm))
+    except ValueError as e:
+        raise ConfigError(f"{name}: expected HH:MM, got {value!r}") from e
+
+
+def _fill(obj: Any, data: dict[str, Any], prefix: str) -> None:
+    """Copy keys from `data` onto dataclass `obj`, recursing into nested sections."""
+    known = {f.name: f for f in fields(obj)}
+    for key, value in (data or {}).items():
+        if key not in known or key in ("api_key", "secret_key", "paper"):
+            raise ConfigError(f"Unknown config key: {prefix}{key}")
+        current = getattr(obj, key)
+        if is_dataclass(current):
+            if not isinstance(value, dict):
+                raise ConfigError(f"{prefix}{key} must be a section")
+            _fill(current, value, f"{prefix}{key}.")
+        elif isinstance(current, time):
+            setattr(obj, key, _parse_time(value, prefix + key))
+        elif isinstance(current, bool):
+            if not isinstance(value, bool):
+                raise ConfigError(f"{prefix}{key} must be true or false")
+            setattr(obj, key, value)
+        elif isinstance(current, (int, float)):
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                raise ConfigError(f"{prefix}{key} must be a number")
+            setattr(obj, key, type(current)(value))
+        else:
+            setattr(obj, key, value)
+
+
+def _validate(cfg: Config) -> None:
+    if not cfg.symbols:
+        raise ConfigError("symbols must list at least one ticker")
+    cfg.symbols = [s.upper().strip() for s in cfg.symbols]
+    if cfg.stock_feed not in ("iex", "sip", "delayed_sip"):
+        raise ConfigError("stock_feed must be iex, sip or delayed_sip")
+    if cfg.options_feed not in ("indicative", "opra"):
+        raise ConfigError("options_feed must be indicative or opra")
+    if cfg.schedule.flatten_at <= cfg.schedule.no_new_entries_after:
+        raise ConfigError("schedule.flatten_at must be after schedule.no_new_entries_after")
+    if not 0 < cfg.contracts.target_delta < 1:
+        raise ConfigError("contracts.target_delta must be between 0 and 1")
+    if not 0 <= cfg.execution.entry_slippage <= 1:
+        raise ConfigError("execution.entry_slippage must be between 0 and 1")
+    if cfg.risk.stop_loss_pct <= 0 or cfg.risk.take_profit_pct <= 0:
+        raise ConfigError("risk.stop_loss_pct and risk.take_profit_pct must be positive")
+
+
+def load_config(config_path: str | Path = "config.yaml", env_path: str | Path = ".env",
+                require_keys: bool = True) -> Config:
+    load_dotenv(env_path)
+    cfg = Config()
+
+    path = Path(config_path)
+    if path.exists():
+        with path.open() as fh:
+            _fill(cfg, yaml.safe_load(fh) or {}, "")
+    elif Path(config_path) != Path("config.yaml"):
+        raise ConfigError(f"Config file not found: {config_path}")
+
+    cfg.api_key = os.getenv("ALPACA_API_KEY", "").strip()
+    cfg.secret_key = os.getenv("ALPACA_SECRET_KEY", "").strip()
+    cfg.paper = os.getenv("ALPACA_PAPER", "true").strip().lower() not in ("false", "0", "no")
+
+    _validate(cfg)
+
+    if require_keys and (not cfg.api_key or not cfg.secret_key or "your_" in cfg.api_key):
+        raise ConfigError("Missing Alpaca API keys. Put ALPACA_API_KEY and ALPACA_SECRET_KEY in .env")
+    if not cfg.paper and not cfg.live_trading_confirmed:
+        raise ConfigError("ALPACA_PAPER=false but live_trading_confirmed is not true in config.yaml. "
+                          "Refusing to trade real money.")
+    return cfg
