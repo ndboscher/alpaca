@@ -13,22 +13,39 @@ by default, has a no-orders dry-run mode, and only needs Python plus your API ke
 
 ## What it does
 
-**Strategy: opening range breakout (ORB), buying calls or puts**
+Both strategies start from the same signal. From 9:30 ET the bot records each ETF's high and
+low (the *opening range*), then waits for a 1-minute bar to close outside it, confirmed by VWAP.
+Pick a strategy with `mode:` in `config.yaml`:
 
-1. From 9:30 ET it records the high and low of each ETF for the first 15 minutes (the *opening range*).
-2. When a 1-minute bar closes **above the range high** (and above VWAP) it buys a **call**;
-   **below the range low** (and below VWAP) it buys a **put**.
-3. It picks the 0DTE contract nearest **0.40 delta** that has a tight bid/ask spread and a
-   reasonable premium, then sizes the trade to your `max_position_usd`.
-4. Every loop (15s) it manages open positions:
-   - **take profit** at +50%
-   - **stop loss** at −35%
-   - **trailing stop**: once up 30%, exit if it falls 20% from its high
-   - **flatten everything at 15:30 ET** (earlier on half-days). It never holds through expiry.
-5. Risk guards: max trades/day, max open positions, one entry per ETF per day, and a
-   **daily loss limit** that flattens and stops trading for the day.
+### `mode: long_options` (default): buy a call or put
+1. Uses a 15-minute opening range. A breakout above it buys a **call**; a breakout below buys a **put**.
+2. It picks the 0DTE contract nearest **0.40 delta** that has a tight spread and a sensible premium,
+   and sizes the trade to `max_position_usd`.
+3. Exits: **+50% take profit**, **−35% stop**, and a **trailing stop** (once up 30%, exit if it falls 20% from its high).
 
-Every number above can be changed in `config.yaml`.
+### `mode: credit_spread`: sell a defined-risk spread (needs options level 3)
+Modelled on the most widely published 0DTE bot, the "60-minute ORB":
+1. Uses a 60-minute opening range. It skips the day if the range is narrower than 0.2%. No entries after 12:00.
+2. Breakout **above** → **sell a put spread** with the short strike at the **range low** ($2 wide).
+   Breakout **below** → **sell a call spread** with the short strike at the **range high**.
+   The trade wins unless price reverses through the *entire* opening range.
+3. Sized so the worst case, `(width − credit) × 100 × qty`, stays within `max_risk_usd`.
+4. Exits: keep **50% of the credit**, a **stop when the loss equals the credit**, or the
+   underlying **breaks the short strike**.
+
+Both legs go out as one Alpaca multi-leg order, so you're never left with a naked short.
+
+### Rules in both modes
+- **Flatten everything at 15:15 ET** (earlier on half-days). Alpaca rejects orders on expiring
+  ETF options after **15:30 ET** and liquidates them at 15:45, so the config can't be set later than 15:25.
+- Max trades per day, max open positions, one entry per ETF per day.
+- A **daily loss limit** that flattens and stops trading for the day.
+- `skip_dates`: sit out FOMC/CPI days.
+
+Every number can be changed in `config.yaml`. **Why two modes?** Academic studies find that retail
+0DTE *buyers* lose money on average, while option sellers have done better but take rare, large
+losses. See [docs/RESEARCH.md](docs/RESEARCH.md) for the sources, published backtests of both
+approaches, and Alpaca's expiration-day rules.
 
 ---
 
@@ -37,7 +54,7 @@ Every number above can be changed in `config.yaml`.
 ### 1. Get an Alpaca account and API keys
 1. Sign up at <https://alpaca.markets> (free). You get a **paper trading** account automatically.
 2. In the dashboard, switch to your **Paper** account and enable **options trading**
-   (level 2 or higher is needed to buy calls/puts).
+   (level 2 to buy calls/puts; level 3 for `credit_spread` mode).
 3. Under **API Keys**, generate a key + secret. Copy them somewhere safe; the secret is shown once.
 
 ### 2. Install Python 3.10+
@@ -120,11 +137,13 @@ use `flatten` if needed.
 ## Configuration highlights
 
 ```yaml
+mode: long_options          # or credit_spread
 symbols: [SPY, QQQ, IWM]
+skip_dates: [2026-10-28]    # e.g. FOMC days
 schedule:
   opening_range_minutes: 15
   no_new_entries_after: "14:30"
-  flatten_at: "15:30"
+  flatten_at: "15:15"       # must be <= 15:25 (Alpaca's 15:30 cutoff)
 risk:
   max_position_usd: 500
   max_daily_loss_usd: 500
@@ -154,8 +173,10 @@ If only one of these is set, the bot refuses to start. Before going live:
 - **Pattern Day Trader rules:** every 0DTE round trip is a day trade. Margin accounts under
   $25,000 are limited in how many day trades they can make. Check Alpaca's current PDT policy for your account.
 - Lower `max_position_usd`, `max_trades_per_day` and `max_daily_loss_usd` to amounts you're comfortable losing.
-- Alpaca may close expiring options positions itself late in the day. The bot flattens
-  at 15:30 ET by default to stay ahead of that.
+- Alpaca rejects new orders on expiring ETF options after 15:30 ET and auto-liquidates them at
+  15:45 ET. The bot flattens at 15:15 ET by default to stay ahead of that.
+- In `credit_spread` mode, place your first paper spread and check `logs/bot.log` to confirm
+  Alpaca accepts the order's credit price convention (see docs/RESEARCH.md §4).
 
 ---
 
@@ -181,12 +202,14 @@ zdte_bot/
   cli.py        command-line entry point (zdte check/run/chain/status/flatten)
   bot.py        main loop: schedule, exits, entries, persistence
   strategy.py   opening range + VWAP breakout signal (pure functions)
-  contracts.py  pick the 0DTE contract to buy
+  contracts.py  pick the 0DTE contract to buy (long_options)
+  spreads.py    pick, size and exit credit spreads (credit_spread)
   risk.py       sizing, daily limits, take-profit / stop / trailing-stop rules
   broker.py     the only file that talks to Alpaca (alpaca-py)
   config.py     loads .env + config.yaml with validation
   journal.py    trade CSV and daily state file
 tests/          unit tests + end-to-end loop tests against a fake broker
+docs/RESEARCH.md  sources and evidence behind the strategy choices
 ```
 
 To write your own strategy, change `strategy.py` (it gets a list of 1-minute bars and returns
@@ -208,3 +231,6 @@ git pull
 ```
 New settings added to `config.example.yaml` use built-in defaults until you copy them into
 your `config.yaml`.
+
+**Upgrading from 0.1.0:** if your `config.yaml` has `flatten_at: "15:30"`, the bot will refuse to
+start. Change it to `"15:15"`, because Alpaca rejects orders on expiring contracts after 15:30.

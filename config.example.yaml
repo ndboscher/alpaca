@@ -1,8 +1,19 @@
 # zdte-bot configuration. `setup` copies this to config.yaml — edit config.yaml, not this file.
 # All times are US/Eastern (market time) in 24h HH:MM.
 
+# Which strategy to run:
+#   long_options   buy a call/put on an opening-range breakout (needs options level 2)
+#   credit_spread  SELL a vertical spread on the far side of the opening range
+#                  (needs options level 3; see docs/RESEARCH.md for why it's included)
+mode: long_options
+
 # Underlyings to trade. These all list options that expire every trading day.
 symbols: [SPY, QQQ, IWM]
+
+# Days to sit out entirely, e.g. FOMC decisions and CPI releases (YYYY-MM-DD).
+# The bot still manages anything already open on these days.
+skip_dates: []
+#  - 2026-10-28   # FOMC (check the Fed calendar)
 
 # Safety switch. Even with ALPACA_PAPER=false in .env the bot refuses to trade
 # real money unless this is true.
@@ -18,8 +29,10 @@ poll_seconds: 15
 
 schedule:
   opening_range_minutes: 15   # build the opening range from the first N minutes
-  no_new_entries_after: "14:30"
-  flatten_at: "15:30"         # close everything this bot holds, no matter what
+  no_new_entries_after: "14:30"   # long_options mode only
+  # Close everything this bot holds, no matter what. Alpaca REJECTS orders on expiring
+  # SPY/QQQ/IWM options after 15:30 ET and auto-liquidates at 15:45, so this must be <= 15:25.
+  flatten_at: "15:15"
 
 strategy:
   # Opening range breakout: buy calls when price closes above the range high,
@@ -29,14 +42,28 @@ strategy:
   max_range_pct: 1.0          # skip a symbol if its opening range is wider than this % (choppy open)
   max_entries_per_symbol: 1   # per day
 
-contracts:
+# Used when mode: credit_spread. Defaults follow the published "60-minute ORB" 0DTE bot,
+# scaled from SPX to SPY-sized strikes.
+credit_spread:
+  opening_range_minutes: 60
+  min_range_pct: 0.2          # skip quiet opens: range narrower than this % of price
+  max_range_pct: 1.5
+  no_new_entries_after: "12:00"
+  width: 2.0                  # $ between short and long strikes
+  min_credit: 0.20            # per share; don't sell for less than $20 per spread
+  max_risk_usd: 500           # max loss if the whole spread goes against us: (width - credit) x 100 x qty
+  profit_target_pct: 50       # buy back once we've kept this % of the credit
+  stop_loss_pct: 100          # buy back once the loss equals this % of the credit
+  exit_on_short_strike_breach: true   # buy back if the underlying trades through the short strike
+
+contracts:   # long_options mode (max_spread_pct also applies to the short leg of credit spreads)
   target_delta: 0.40          # abs(delta) to aim for; falls back to strike distance if greeks are missing
   max_strike_distance_pct: 1.5
   min_premium: 0.30           # per-share price, i.e. $30 per contract
   max_premium: 5.00
   max_spread_pct: 10.0        # skip contracts whose bid/ask spread is wider than this % of mid
 
-risk:
+risk:   # trade/position/daily limits apply to both modes; the rest is long_options only
   max_position_usd: 500       # max premium spent on a single trade
   max_contracts: 5
   max_open_positions: 2

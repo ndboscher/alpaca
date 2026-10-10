@@ -46,9 +46,12 @@ def cmd_check(cfg, broker: Broker, _args) -> int:
     for sym in cfg.symbols:
         print(f"{sym:<6} last:     {broker.last_price(sym):.2f}")
     ok = True
-    if acct.options_level < 2:
-        print("\n!! Options level must be 2+ to buy calls/puts. Enable options trading in the "
-              "Alpaca dashboard (paper accounts: Account -> Options trading).")
+    print(f"Strategy mode:   {cfg.mode}")
+    need = 3 if cfg.mode == "credit_spread" else 2
+    if acct.options_level < need:
+        what = "sell credit spreads" if need == 3 else "buy calls/puts"
+        print(f"\n!! Options level must be {need}+ to {what}. Request it in the Alpaca dashboard "
+              "(paper accounts: Account -> Options trading).")
         ok = False
     if acct.trading_blocked:
         ok = False
@@ -101,7 +104,17 @@ def cmd_flatten(cfg, broker: Broker, args) -> int:
         return 1
     bot = Bot(cfg, broker)
     bot.load_day(today)
-    bot.flatten(positions, "manual flatten")
+    if args.all:  # non-0DTE positions aren't tracked as spreads; close each leg, shorts first
+        for p in sorted(positions, key=lambda p: p.qty):
+            broker.close_position(p.symbol)
+    elif cfg.mode == "credit_spread":
+        bot.flatten_spreads(today, "manual flatten")
+    else:
+        bot.flatten([p for p in positions if p.qty > 0], "manual flatten")
+        for p in positions:
+            if p.qty < 0:
+                broker.close_position(p.symbol)
+    bot.state.save(bot.state_dir)
     return 0
 
 

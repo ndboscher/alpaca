@@ -29,9 +29,10 @@ class OpeningRange:
 
 @dataclass(frozen=True)
 class Signal:
-    side: Side
+    side: Side          # CALL = bullish breakout, PUT = bearish breakout
     price: float
     reason: str
+    range: OpeningRange
 
 
 def opening_range(bars: list[Bar], session_open: datetime, minutes: int) -> OpeningRange | None:
@@ -51,13 +52,19 @@ def vwap(bars: list[Bar]) -> float | None:
 
 
 def breakout_signal(bars: list[Bar], session_open: datetime, range_minutes: int,
-                    cfg: StrategyCfg) -> Signal | None:
-    """Return a CALL/PUT signal if the latest completed bar closes outside the opening range."""
+                    cfg: StrategyCfg, min_range_pct: float = 0.0,
+                    max_range_pct: float | None = None) -> Signal | None:
+    """Return a CALL/PUT signal if the latest completed bar closes outside the opening range.
+
+    `min_range_pct`/`max_range_pct` skip days whose range is too tight (no real move to
+    break out of) or too wide (choppy, gappy open). `max_range_pct` defaults to cfg's.
+    """
     session = [b for b in bars if b.ts >= session_open]
     rng = opening_range(session, session_open, range_minutes)
     if rng is None:
         return None
-    if rng.width_pct > cfg.max_range_pct:
+    max_pct = cfg.max_range_pct if max_range_pct is None else max_range_pct
+    if not min_range_pct <= rng.width_pct <= max_pct:
         return None
 
     last = session[-1]
@@ -68,10 +75,10 @@ def breakout_signal(bars: list[Bar], session_open: datetime, range_minutes: int,
         if cfg.require_vwap_confirm and vw is not None and last.close <= vw:
             return None
         return Signal(Side.CALL, last.close,
-                      f"close {last.close:.2f} > OR high {rng.high:.2f} (vwap {vw or 0:.2f})")
+                      f"close {last.close:.2f} > OR high {rng.high:.2f} (vwap {vw or 0:.2f})", rng)
     if last.close < rng.low - buffer:
         if cfg.require_vwap_confirm and vw is not None and last.close >= vw:
             return None
         return Signal(Side.PUT, last.close,
-                      f"close {last.close:.2f} < OR low {rng.low:.2f} (vwap {vw or 0:.2f})")
+                      f"close {last.close:.2f} < OR low {rng.low:.2f} (vwap {vw or 0:.2f})", rng)
     return None

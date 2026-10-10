@@ -40,6 +40,9 @@ class DayState:
     high_water: dict[str, float] = field(default_factory=dict)
     # Dry-run only: simulated positions {option_symbol: {"qty": n, "entry": price}}
     paper_positions: dict[str, dict] = field(default_factory=dict)
+    # Credit spreads the bot opened: {"SHORT/LONG": {underlying, side, short, long,
+    # short_strike, qty, credit}}. Alpaca reports legs separately, so we pair them here.
+    spreads: dict[str, dict] = field(default_factory=dict)
 
     @classmethod
     def load(cls, folder: Path, today: date) -> "DayState":

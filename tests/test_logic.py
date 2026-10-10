@@ -139,7 +139,8 @@ def test_config_loads_example(tmp_path, monkeypatch):
     env.write_text("ALPACA_API_KEY=abc\nALPACA_SECRET_KEY=def\nALPACA_PAPER=true\n")
     cfg = load_config("config.example.yaml", env)
     assert cfg.symbols == ["SPY", "QQQ", "IWM"] and cfg.paper
-    assert cfg.schedule.flatten_at == time(15, 30)
+    assert cfg.schedule.flatten_at == time(15, 15)
+    assert cfg.mode == "long_options" and cfg.credit_spread.opening_range_minutes == 60
 
 
 def test_config_refuses_unconfirmed_live(tmp_path, monkeypatch):

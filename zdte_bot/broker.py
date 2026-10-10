@@ -22,7 +22,9 @@ from alpaca.trading.client import TradingClient
 from alpaca.trading.enums import (
     ContractType,
     OrderSide,
+    OrderClass,
     OrderStatus,
+    PositionIntent,
     QueryOrderStatus,
     TimeInForce,
 )
@@ -30,6 +32,7 @@ from alpaca.trading.requests import (
     GetOrdersRequest,
     LimitOrderRequest,
     MarketOrderRequest,
+    OptionLegRequest,
 )
 
 from .config import Config
@@ -180,7 +183,10 @@ class Broker:
 
     def open_order_symbols(self) -> set[str]:
         orders = self.trading.get_orders(GetOrdersRequest(status=QueryOrderStatus.OPEN))
-        return {o.symbol for o in orders}
+        out = set()
+        for o in orders:  # multi-leg orders have no top-level symbol; use their legs
+            out.update(x.symbol for x in [o, *(o.legs or [])] if x.symbol)
+        return out
 
     def buy_limit(self, symbol: str, qty: int, limit: float) -> FillResult:
         """Buy-to-open with a limit order; wait for a fill, cancel whatever is left."""
@@ -210,11 +216,65 @@ class Broker:
         return self._await_fill(str(order.id), self.cfg.execution.fill_timeout_seconds,
                                 cancel_on_timeout=limit is not None)
 
+    def open_credit_spread(self, short: str, long: str, qty: int, credit: float) -> FillResult:
+        """Sell a vertical as one multi-leg (mleg) order for at least `credit` per share."""
+        if self.dry_run:
+            log.info("[DRY RUN] SELL SPREAD %d x -%s +%s @ %.2f credit", qty, short, long, credit)
+            return FillResult(qty, credit, None)
+        legs = [
+            OptionLegRequest(symbol=short, ratio_qty=1, side=OrderSide.SELL,
+                             position_intent=PositionIntent.SELL_TO_OPEN),
+            OptionLegRequest(symbol=long, ratio_qty=1, side=OrderSide.BUY,
+                             position_intent=PositionIntent.BUY_TO_OPEN),
+        ]
+        # Alpaca's mleg convention: net debit is positive, net credit is negative.
+        order = self.trading.submit_order(LimitOrderRequest(
+            qty=qty, order_class=OrderClass.MLEG, time_in_force=TimeInForce.DAY,
+            limit_price=-round(credit, 2), legs=legs,
+        ))
+        res = self._await_fill(str(order.id), self.cfg.execution.fill_timeout_seconds,
+                               cancel_on_timeout=True)
+        return FillResult(res.filled_qty, abs(res.avg_price) if res.avg_price else None,
+                          res.order_id)
+
+    def close_credit_spread(self, short: str, long: str, qty: int,
+                            debit: float | None) -> FillResult:
+        """Buy back a vertical as one mleg order. Market order when `debit` is None."""
+        if self.dry_run:
+            log.info("[DRY RUN] BUY BACK SPREAD %d x -%s +%s @ %s", qty, short, long,
+                     "MKT" if debit is None else f"{debit:.2f} debit")
+            return FillResult(qty, debit, None)
+        legs = [
+            OptionLegRequest(symbol=short, ratio_qty=1, side=OrderSide.BUY,
+                             position_intent=PositionIntent.BUY_TO_CLOSE),
+            OptionLegRequest(symbol=long, ratio_qty=1, side=OrderSide.SELL,
+                             position_intent=PositionIntent.SELL_TO_CLOSE),
+        ]
+        if debit is None:
+            req = MarketOrderRequest(qty=qty, order_class=OrderClass.MLEG,
+                                     time_in_force=TimeInForce.DAY, legs=legs)
+        else:
+            req = LimitOrderRequest(qty=qty, order_class=OrderClass.MLEG,
+                                    time_in_force=TimeInForce.DAY,
+                                    limit_price=round(max(debit, 0.01), 2), legs=legs)
+        order = self.trading.submit_order(req)
+        res = self._await_fill(str(order.id), self.cfg.execution.fill_timeout_seconds,
+                               cancel_on_timeout=debit is not None)
+        return FillResult(res.filled_qty, abs(res.avg_price) if res.avg_price else None,
+                          res.order_id)
+
+    def close_position(self, symbol: str) -> None:
+        """Close one position at market, whatever its side (fallback for stray legs)."""
+        if self.dry_run:
+            log.info("[DRY RUN] CLOSE POSITION %s", symbol)
+            return
+        self.trading.close_position(symbol)
+
     def cancel_orders_for(self, symbols: set[str]) -> None:
         if self.dry_run:
             return
         for o in self.trading.get_orders(GetOrdersRequest(status=QueryOrderStatus.OPEN)):
-            if o.symbol in symbols:
+            if {x.symbol for x in [o, *(o.legs or [])]} & symbols:
                 try:
                     self.trading.cancel_order_by_id(o.id)
                 except APIError as e:
