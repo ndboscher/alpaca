@@ -29,10 +29,22 @@ poll_seconds: 15
 
 schedule:
   opening_range_minutes: 15   # build the opening range from the first N minutes
-  no_new_entries_after: "14:30"   # long_options mode only
+  no_new_entries_after: "14:30"   # long_options mode only; profit_window.start wins if earlier
   # Close everything this bot holds, no matter what. Alpaca REJECTS orders on expiring
   # SPY/QQQ/IWM options after 15:30 ET and auto-liquidates at 15:45, so this must be <= 15:25.
   flatten_at: "15:15"
+
+# Make the money by midday. 0DTE premium decays fastest in the afternoon, so:
+#  - new entries stop at `start`
+#  - from `start`, any position up at least `min_profit_pct` is closed to lock in the gain
+#  - at `end`, everything still open is closed, winner or loser (if close_all_at_end)
+# schedule.flatten_at (15:15) stays as the last-resort safety close.
+profit_window:
+  enabled: true
+  start: "11:00"
+  end: "13:00"
+  min_profit_pct: 10          # % gain on premium paid (long_options) or % of credit kept (credit_spread)
+  close_all_at_end: true
 
 strategy:
   # Opening range breakout: buy calls when price closes above the range high,
@@ -48,7 +60,7 @@ credit_spread:
   opening_range_minutes: 60
   min_range_pct: 0.2          # skip quiet opens: range narrower than this % of price
   max_range_pct: 1.5
-  no_new_entries_after: "12:00"
+  no_new_entries_after: "12:00"   # profit_window.start wins if earlier
   width: 2.0                  # $ between short and long strikes
   min_credit: 0.20            # per share; don't sell for less than $20 per spread
   max_risk_usd: 500           # max loss if the whole spread goes against us: (width - credit) x 100 x qty

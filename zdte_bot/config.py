@@ -32,6 +32,22 @@ class Schedule:
 
 
 @dataclass
+class ProfitWindowCfg:
+    """Make the money by midday: lock in gains from `start`, be flat by `end`.
+
+    0DTE premium decays fastest in the afternoon, so long options that haven't worked by
+    early afternoon rarely recover. From `start` any position up at least `min_profit_pct`
+    is closed; at `end` everything still open is closed (when `close_all_at_end`).
+    New entries stop at `start`. The hard flatten at schedule.flatten_at still applies.
+    """
+    enabled: bool = True
+    start: time = time(11, 0)
+    end: time = time(13, 0)
+    min_profit_pct: float = 10
+    close_all_at_end: bool = True
+
+
+@dataclass
 class StrategyCfg:
     breakout_buffer_pct: float = 0.05
     require_vwap_confirm: bool = True
@@ -96,6 +112,7 @@ class Config:
     options_feed: str = "indicative"
     poll_seconds: int = 15
     schedule: Schedule = field(default_factory=Schedule)
+    profit_window: ProfitWindowCfg = field(default_factory=ProfitWindowCfg)
     strategy: StrategyCfg = field(default_factory=StrategyCfg)
     contracts: ContractsCfg = field(default_factory=ContractsCfg)
     credit_spread: CreditSpreadCfg = field(default_factory=CreditSpreadCfg)
@@ -160,6 +177,11 @@ def _validate(cfg: Config) -> None:
         raise ConfigError("options_feed must be indicative or opra")
     if cfg.schedule.flatten_at <= cfg.schedule.no_new_entries_after:
         raise ConfigError("schedule.flatten_at must be after schedule.no_new_entries_after")
+    pw = cfg.profit_window
+    if pw.enabled and not pw.start < pw.end <= cfg.schedule.flatten_at:
+        raise ConfigError("profit_window: need start < end <= schedule.flatten_at")
+    if pw.enabled and pw.min_profit_pct < 0:
+        raise ConfigError("profit_window.min_profit_pct can't be negative")
     cs = cfg.credit_spread
     if cs.width <= 0 or cs.min_credit <= 0 or cs.min_credit >= cs.width:
         raise ConfigError("credit_spread: need 0 < min_credit < width")

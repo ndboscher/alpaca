@@ -15,7 +15,7 @@ from .config import EXPIRY_ORDER_CUTOFF, Config
 from .contracts import select_contract
 from .journal import DayState, Journal
 from .models import Side, parse_occ
-from .risk import DayStats, entry_block_reason, exit_reason, position_size
+from .risk import DayStats, entry_block_reason, exit_reason, position_size, window_exit_reason
 from .spreads import select_credit_spread, spread_exit_reason, spread_side_for, spread_size
 from .strategy import breakout_signal
 
@@ -120,6 +120,8 @@ class Bot:
                          clock.next_close.astimezone(ET) - CLOSE_BUFFER)
         entry_cutoff = (self.cfg.credit_spread.no_new_entries_after if self.spread_mode
                         else self.cfg.schedule.no_new_entries_after)
+        if self.cfg.profit_window.enabled:  # trades need time to work before the window
+            entry_cutoff = min(entry_cutoff, self.cfg.profit_window.start)
         last_entry = min(datetime.combine(today, entry_cutoff, tzinfo=ET), flatten_at)
         if today.isoformat() in self.cfg.skip_dates:
             if not self._skip_logged:
@@ -170,9 +172,11 @@ class Bot:
                 continue
             hw = max(state.high_water.get(p.symbol, p.avg_entry), mark)
             state.high_water[p.symbol] = hw
-            reason = exit_reason(p.avg_entry, mark, hw, self.cfg.risk)
+            pnl_pct = (mark - p.avg_entry) / p.avg_entry * 100
+            reason = (exit_reason(p.avg_entry, mark, hw, self.cfg.risk)
+                      or window_exit_reason(pnl_pct, now.time(), self.cfg.profit_window))
             log.info("HOLD %s x%d entry %.2f mark %.2f (%+.1f%%)", p.symbol, p.qty, p.avg_entry,
-                     mark, (mark - p.avg_entry) / p.avg_entry * 100)
+                     mark, pnl_pct)
             if reason:
                 self._close(p, reason, bid)
 
@@ -206,8 +210,10 @@ class Bot:
                 spot = spots.get(sp["underlying"])
                 log.info("HOLD %s x%d credit %.2f cost-to-close %.2f spot %s", key, sp["qty"],
                          sp["credit"], cost, f"{spot:.2f}" if spot else "?")
-                reason = spread_exit_reason(sp["credit"], cost, spot, Side(sp["side"]),
-                                            sp["short_strike"], self.cfg.credit_spread)
+                captured_pct = (sp["credit"] - cost) / sp["credit"] * 100
+                reason = (spread_exit_reason(sp["credit"], cost, spot, Side(sp["side"]),
+                                             sp["short_strike"], self.cfg.credit_spread)
+                          or window_exit_reason(captured_pct, now.time(), self.cfg.profit_window))
                 if reason:
                     self._close_spread(key, reason, natural_debit=max(0.01, sa - lb))
 

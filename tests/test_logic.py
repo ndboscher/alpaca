@@ -157,3 +157,27 @@ def test_config_rejects_unknown_key(tmp_path):
     p.write_text("risk:\n  max_posiiton_usd: 5\n")
     with pytest.raises(ConfigError, match="max_posiiton_usd"):
         load_config(p, tmp_path / "none.env", require_keys=False)
+
+
+# ---- profit window ----------------------------------------------------------
+
+def test_window_exit_reason():
+    from zdte_bot.config import ProfitWindowCfg
+    from zdte_bot.risk import window_exit_reason
+    cfg = ProfitWindowCfg(start=time(11), end=time(13), min_profit_pct=10)
+    assert window_exit_reason(40, time(10, 59), cfg) is None          # before window: let it run
+    assert "lock in" in window_exit_reason(12, time(11, 30), cfg)
+    assert window_exit_reason(5, time(11, 30), cfg) is None           # not enough profit yet
+    assert window_exit_reason(-20, time(12, 59), cfg) is None
+    assert "window closed" in window_exit_reason(-20, time(13, 0), cfg)
+    cfg.close_all_at_end = False
+    assert window_exit_reason(-20, time(13, 30), cfg) is None
+    cfg.enabled = False
+    assert window_exit_reason(50, time(12), cfg) is None
+
+
+def test_profit_window_validation(tmp_path):
+    p = tmp_path / "c.yaml"
+    p.write_text('profit_window:\n  start: "13:00"\n  end: "11:00"\n')
+    with pytest.raises(ConfigError, match="profit_window"):
+        load_config(p, tmp_path / "none.env", require_keys=False)

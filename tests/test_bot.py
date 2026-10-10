@@ -130,3 +130,36 @@ def test_run_exits_after_close(tmp_path, monkeypatch):
     monkeypatch.setattr("zdte_bot.bot._time.sleep", fake_sleep)
     bot.run(exit_after_close=True)
     assert len(ticks) == 1
+
+
+def test_profit_window_locks_gain_then_closes_rest(tmp_path):
+    broker = FakeBroker()
+    bot = make_bot(tmp_path, broker)
+    bot.tick()                                    # 09:50 entry at 1.025
+    sym = broker.orders[0][1]
+    broker.quotes[sym] = (1.14, 1.16)             # +12%: below take-profit, above window min
+    broker.now = datetime(2026, 10, 6, 10, 55, tzinfo=ET)
+    bot.tick()
+    assert len(broker.orders) == 1                # before 11:00 it is left to run
+    broker.now = datetime(2026, 10, 6, 11, 1, tzinfo=ET)
+    bot.tick()
+    assert broker.orders[-1][:2] == ("SELL", sym)
+
+
+def test_profit_window_time_stop_and_no_late_entries(tmp_path):
+    broker = FakeBroker()
+    bot = make_bot(tmp_path, broker)
+    bot.tick()
+    sym = broker.orders[0][1]
+    broker.quotes[sym] = (0.90, 0.92)             # -11%: no stop yet
+    broker.now = datetime(2026, 10, 6, 12, 0, tzinfo=ET)
+    bot.tick()
+    assert len(broker.orders) == 1
+    broker.now = datetime(2026, 10, 6, 13, 0, tzinfo=ET)
+    bot.tick()
+    assert broker.orders[-1][:2] == ("SELL", sym)
+
+    late = FakeBroker()
+    late.now = datetime(2026, 10, 6, 11, 5, tzinfo=ET)
+    make_bot(tmp_path / "late", late).tick()
+    assert late.orders == []                      # entries stop at window start

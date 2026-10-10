@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
+from datetime import time
 
-from .config import RiskCfg
+from .config import ProfitWindowCfg, RiskCfg
 
 CONTRACT_MULTIPLIER = 100
 
@@ -51,4 +52,15 @@ def exit_reason(entry: float, current: float, high_water: float, cfg: RiskCfg) -
         drawdown = (high_water - current) / high_water * 100
         if drawdown >= cfg.trailing_stop_pct:
             return f"trailing stop ({change:+.1f}%, {drawdown:.1f}% off high)"
+    return None
+
+
+def window_exit_reason(pnl_pct: float, now: time, cfg: ProfitWindowCfg) -> str | None:
+    """Midday profit-window rule. `pnl_pct` is the position's gain as % of entry (or credit)."""
+    if not cfg.enabled or now < cfg.start:
+        return None
+    if now >= cfg.end and cfg.close_all_at_end:
+        return f"profit window closed at {cfg.end:%H:%M} ({pnl_pct:+.1f}%)"
+    if pnl_pct >= cfg.min_profit_pct:
+        return f"lock in profit after {cfg.start:%H:%M} ({pnl_pct:+.1f}%)"
     return None

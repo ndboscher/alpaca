@@ -125,6 +125,15 @@ Sources: [Alpaca: backtesting a 0DTE bull put spread](https://alpaca.markets/lea
 
 ---
 
+## 6. Midday profit window (owner's requirement)
+
+The bot should make its money by late morning or early afternoon and be done well before
+the close. Implemented as `profit_window`: no entries after 11:00 ET, close anything up ≥10%
+from 11:00, and close everything at 13:00 ET. The 15:15 flatten stays as a backstop.
+Reasoning: 0DTE theta (time decay) accelerates into the afternoon, which works against
+long options. For credit spreads it gives up some afternoon decay in exchange for less
+exposure to late-day reversals. Whether it helps is a backtest question (roadmap item 1).
+
 ## Roadmap suggested by this research
 
 1. **Backtester:** replay historical 1-minute bars plus option quotes (Alpaca historical

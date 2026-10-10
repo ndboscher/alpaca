@@ -35,8 +35,25 @@ Modelled on the most widely published 0DTE bot, the "60-minute ORB":
 
 Both legs go out as one Alpaca multi-leg order, so you're never left with a naked short.
 
+### The trading day
+
+| Time (ET) | What happens |
+|---|---|
+| 9:30 | Opening range starts building (15 min for long options, 60 min for spreads) |
+| 9:45 / 10:30 | Breakout entries can start |
+| **11:00** | **No new entries.** Profit window opens: any position up ≥10% is closed to lock in the gain |
+| **13:00** | **Profit window ends: everything still open is closed**, winner or loser |
+| 15:15 | Safety flatten, in case anything is still open (e.g. an exit order failed) |
+| 15:30 | Alpaca stops accepting orders on expiring contracts |
+
+The aim is to make the day's money by midday. 0DTE premium decays fastest in the afternoon,
+so a long option that hasn't worked by 1 PM rarely recovers. Turn this off with
+`profit_window: enabled: false`, or move the times in `config.yaml`. Take-profit and stop-loss
+exits still apply at any time of day.
+
 ### Rules in both modes
-- **Flatten everything at 15:15 ET** (earlier on half-days). Alpaca rejects orders on expiring
+- **Profit window 11:00–13:00 ET**: lock in gains, then close everything by 13:00 (see above).
+- **Safety flatten at 15:15 ET** (earlier on half-days). Alpaca rejects orders on expiring
   ETF options after **15:30 ET** and liquidates them at 15:45, so the config can't be set later than 15:25.
 - Max trades per day, max open positions, one entry per ETF per day.
 - A **daily loss limit** that flattens and stops trading for the day.

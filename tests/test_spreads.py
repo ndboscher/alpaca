@@ -225,3 +225,17 @@ def test_spread_mode_closes_orphaned_leg(tmp_path):
     bot.tick()
     assert broker.orders[-1] == ("CLOSE_POS", broker.orders[0][1])
     assert not bot.state.spreads and not broker.positions
+
+
+def test_spread_mode_profit_window(tmp_path):
+    broker = SpreadBroker()
+    bot = spread_bot(tmp_path, broker)
+    bot.tick()                                    # 10:35 entry, ~0.22 credit
+    _, short, long, _, _ = broker.orders[0]
+    broker.quotes[short] = (0.24, 0.26)           # cost to close ~0.17: ~25% of credit kept
+    broker.quotes[long] = (0.08, 0.10)
+    bot.tick()
+    assert len(broker.orders) == 1                # before 11:00, aim for the full 50% target
+    broker.now = datetime(2026, 10, 6, 11, 0, tzinfo=ET)
+    bot.tick()
+    assert broker.orders[-1][0] == "CLOSE" and not bot.state.spreads
