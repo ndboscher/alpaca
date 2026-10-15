@@ -43,9 +43,18 @@ def cmd_check(cfg, broker: Broker, _args) -> int:
     print(f"Market open:     {clock.is_open}  (next open "
           f"{clock.next_open.astimezone(ET):%a %H:%M ET}, next close "
           f"{clock.next_close.astimezone(ET):%a %H:%M ET})")
-    for sym in cfg.symbols:
-        print(f"{sym:<6} last:     {broker.last_price(sym):.2f}")
     ok = True
+    problems = broker.check_feeds()
+    if problems:
+        ok = False
+        for msg in problems:
+            print(f"!! Data feed: {msg}")
+        print("   Free plan? Set stock_feed: iex, options_feed: indicative and poll_seconds: 15 "
+              "in config.yaml.")
+    else:
+        print(f"Data feeds:      stocks={cfg.stock_feed}  options={cfg.options_feed}  OK")
+        for sym in cfg.symbols:
+            print(f"{sym:<6} last:     {broker.last_price(sym):.2f}")
     print(f"Strategy mode:   {cfg.mode}")
     need = 3 if cfg.mode == "credit_spread" else 2
     if acct.options_level < need:
@@ -64,7 +73,7 @@ def cmd_chain(cfg, broker: Broker, args) -> int:
     spot = broker.last_price(sym)
     today = datetime.now(ET).date()
     side = None if args.type == "both" else Side(args.type)
-    chain = broker.option_chain(sym, today, side, spot, args.width)
+    chain = broker.option_chain(sym, today, side, spot, args.width, fresh_only=False)
     if not chain:
         print(f"No {sym} contracts expiring {today} found (is today a trading day?).")
         return 1
@@ -119,6 +128,15 @@ def cmd_flatten(cfg, broker: Broker, args) -> int:
 
 
 def cmd_run(cfg, broker: Broker, args) -> int:
+    problems = broker.check_feeds()
+    if problems:
+        for msg in problems:
+            print(f"Data feed error: {msg}", file=sys.stderr)
+        print("Your Alpaca data plan doesn't cover the feeds in config.yaml. On the free plan set "
+              "stock_feed: iex, options_feed: indicative and poll_seconds: 15.", file=sys.stderr)
+        return 2
+    logging.getLogger(__name__).info("Data feeds OK: stocks=%s options=%s, polling every %ss",
+                                     cfg.stock_feed, cfg.options_feed, cfg.poll_seconds)
     try:
         Bot(cfg, broker).run(exit_after_close=args.exit_after_close)
     except KeyboardInterrupt:

@@ -20,6 +20,7 @@ class ConfigError(Exception):
 # auto-liquidates them at 15:45 ET. We must be completely flat before the cutoff.
 EXPIRY_ORDER_CUTOFF = time(15, 30)
 LATEST_FLATTEN = time(15, 25)
+FREE_PLAN_MIN_POLL = 10  # seconds; faster polling can exceed the free plan's 200 calls/min
 
 MODES = ("long_options", "credit_spread")
 
@@ -108,9 +109,10 @@ class Config:
     symbols: list[str] = field(default_factory=lambda: ["SPY", "QQQ", "IWM"])
     skip_dates: list[str] = field(default_factory=list)
     live_trading_confirmed: bool = False
-    stock_feed: str = "iex"
-    options_feed: str = "indicative"
-    poll_seconds: int = 15
+    stock_feed: str = "sip"
+    options_feed: str = "opra"
+    poll_seconds: int = 5
+    max_quote_age_seconds: int = 30
     schedule: Schedule = field(default_factory=Schedule)
     profit_window: ProfitWindowCfg = field(default_factory=ProfitWindowCfg)
     strategy: StrategyCfg = field(default_factory=StrategyCfg)
@@ -175,6 +177,13 @@ def _validate(cfg: Config) -> None:
         raise ConfigError("stock_feed must be iex, sip or delayed_sip")
     if cfg.options_feed not in ("indicative", "opra"):
         raise ConfigError("options_feed must be indicative or opra")
+    if cfg.poll_seconds < 1:
+        raise ConfigError("poll_seconds must be at least 1")
+    if cfg.poll_seconds < FREE_PLAN_MIN_POLL and (cfg.stock_feed != "sip" or cfg.options_feed != "opra"):
+        raise ConfigError(f"poll_seconds below {FREE_PLAN_MIN_POLL} needs the paid data plan "
+                          "(stock_feed: sip, options_feed: opra); the free plan allows 200 API calls/min")
+    if cfg.max_quote_age_seconds <= 0:
+        raise ConfigError("max_quote_age_seconds must be positive")
     if cfg.schedule.flatten_at <= cfg.schedule.no_new_entries_after:
         raise ConfigError("schedule.flatten_at must be after schedule.no_new_entries_after")
     pw = cfg.profit_window

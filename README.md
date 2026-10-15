@@ -171,9 +171,13 @@ risk:
 See `config.example.yaml` for every option with comments. Unknown keys are rejected,
 so a typo fails loudly instead of being silently ignored.
 
-**Market data:** free Alpaca accounts use the `iex` stock feed and `indicative` options feed
-(the defaults). If you subscribe to Alpaca's paid data plan, set `stock_feed: sip` and
-`options_feed: opra` for real-time consolidated quotes, which give better signals and fills.
+**Market data:** the defaults assume Alpaca's paid **Algo Trader Plus** plan: `stock_feed: sip`
+(real-time prices from every US exchange), `options_feed: opra` (real exchange option quotes) and
+`poll_seconds: 5`. `zdte check` and `zdte run` test both feeds at startup and stop with a clear
+message if your plan doesn't cover them. Option quotes older than `max_quote_age_seconds` (30) are
+ignored when picking a contract. **On the free plan**, set `stock_feed: iex`,
+`options_feed: indicative` and `poll_seconds: 15` in `config.yaml`; the free option feed is an
+estimate rather than real quotes, so treat results as a test of the logic only.
 
 ---
 

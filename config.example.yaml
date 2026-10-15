@@ -19,13 +19,20 @@ skip_dates: []
 # real money unless this is true.
 live_trading_confirmed: false
 
-# Market data feeds. Free Alpaca accounts must use "iex" (stocks) and "indicative" (options).
-# With a paid Algo Trader Plus subscription use "sip" and "opra".
-stock_feed: iex
-options_feed: indicative
+# Market data feeds. These defaults need Alpaca's paid Algo Trader Plus plan:
+#   sip  = real-time stock prices from every US exchange
+#   opra = real option quotes from the exchanges
+# On the free plan use: stock_feed: iex, options_feed: indicative, poll_seconds: 15
+# (`zdte check` tells you if your plan doesn't cover the feeds set here.)
+stock_feed: sip
+options_feed: opra
 
-# How often the main loop runs, in seconds.
-poll_seconds: 15
+# How often the main loop runs, in seconds. 5 is fine on the paid plan (10,000 API calls/min);
+# the free plan's 200 calls/min needs 10 or more.
+poll_seconds: 5
+
+# Skip option quotes older than this when choosing a contract to enter.
+max_quote_age_seconds: 30
 
 schedule:
   opening_range_minutes: 15   # build the opening range from the first N minutes
