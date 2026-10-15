@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import logging
 import sys
+import threading
 from datetime import datetime
 from logging.handlers import TimedRotatingFileHandler
 from pathlib import Path
@@ -137,11 +138,54 @@ def cmd_run(cfg, broker: Broker, args) -> int:
         return 2
     logging.getLogger(__name__).info("Data feeds OK: stocks=%s options=%s, polling every %ss",
                                      cfg.stock_feed, cfg.options_feed, cfg.poll_seconds)
+    if args.dashboard:
+        return _run_with_dashboard(cfg, broker, args)
     try:
         Bot(cfg, broker).run(exit_after_close=args.exit_after_close)
     except KeyboardInterrupt:
         logging.getLogger(__name__).warning(
             "Stopped by user. Any open positions are still open - run `zdte status` / `zdte flatten`.")
+    return 0
+
+
+def _load_dashboard():
+    try:
+        from .dashboard import run_dashboard
+    except ImportError as e:  # `rich` arrives with this version; old installs need a re-run of setup
+        raise SystemExit(f"The dashboard needs the 'rich' package ({e}). Re-run ./setup.sh "
+                         "(or setup.ps1 on Windows) to install it.")
+    return run_dashboard
+
+
+def _run_with_dashboard(cfg, broker: Broker, args) -> int:
+    """Bot in a background thread, dashboard in the foreground, one terminal window."""
+    run_dashboard = _load_dashboard()
+    # Console log lines would scribble over the dashboard; they still go to logs/bot.log,
+    # which the dashboard shows.
+    root = logging.getLogger()
+    root.handlers[:] = [h for h in root.handlers if type(h) is not logging.StreamHandler]
+    bot = Bot(cfg, broker)
+    thread = threading.Thread(target=bot.run, kwargs={"exit_after_close": args.exit_after_close},
+                              name="zdte-bot", daemon=True)
+    thread.start()
+    try:  # the dashboard gets its own client so it never shares a connection with the bot
+        run_dashboard(cfg, Broker(cfg, dry_run=broker.dry_run), bot_thread=thread,
+                      stop_with_bot=args.exit_after_close)
+    except KeyboardInterrupt:
+        pass
+    if thread.is_alive():
+        print("Stopped. Any open positions are still open - run `zdte status` / `zdte flatten`.")
+    else:
+        print("Bot finished for the day.")
+    return 0
+
+
+def cmd_dashboard(cfg, broker: Broker, args) -> int:
+    run_dashboard = _load_dashboard()
+    try:
+        run_dashboard(cfg, broker, refresh=args.refresh)
+    except KeyboardInterrupt:
+        pass
     return 0
 
 
@@ -159,6 +203,13 @@ def main(argv: list[str] | None = None) -> int:
                    help="use real market data but only simulate orders")
     p.add_argument("--exit-after-close", action="store_true",
                    help="stop once today's session ends (for cron / Task Scheduler)")
+    p.add_argument("--dashboard", action="store_true",
+                   help="show the live dashboard in this window while the bot runs")
+    p = sub.add_parser("dashboard", help="live read-only dashboard (run the bot in another window)")
+    p.add_argument("--dry-run", action="store_true",
+                   help="watch a bot started with `run --dry-run` (its simulated positions)")
+    p.add_argument("--refresh", type=float, default=None,
+                   help="seconds between data refreshes (default: poll_seconds, min 5)")
     p = sub.add_parser("chain", help="show today's 0DTE chain near the money")
     p.add_argument("symbol")
     p.add_argument("--type", choices=["call", "put", "both"], default="both")
@@ -178,7 +229,7 @@ def main(argv: list[str] | None = None) -> int:
 
     broker = Broker(cfg, dry_run=getattr(args, "dry_run", False))
     commands = {"check": cmd_check, "run": cmd_run, "chain": cmd_chain,
-                "status": cmd_status, "flatten": cmd_flatten}
+                "status": cmd_status, "flatten": cmd_flatten, "dashboard": cmd_dashboard}
     try:
         return commands[args.command](cfg, broker, args)
     except APIError as e:
