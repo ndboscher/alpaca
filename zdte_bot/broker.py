@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 import time as _time
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 
 from alpaca.common.exceptions import APIError
 from alpaca.data.enums import DataFeed, OptionsFeed
@@ -132,8 +132,26 @@ class Broker:
             StockLatestTradeRequest(symbol_or_symbols=symbol, feed=self._stock_feed))
         return float(trades[symbol].price)
 
+    def check_feeds(self) -> list[str]:
+        """Probe the configured data feeds. Returns a list of problems (empty if all good)."""
+        probe = self.cfg.symbols[0]
+        problems = []
+        try:
+            self.last_price(probe)
+        except APIError as e:
+            problems.append(f"stock feed '{self.cfg.stock_feed}' was rejected: {e}")
+        try:
+            self.options.get_option_chain(OptionChainRequest(
+                underlying_symbol=probe, feed=self._options_feed,
+                expiration_date_gte=datetime.now(timezone.utc).date()))
+        except APIError as e:
+            problems.append(f"options feed '{self.cfg.options_feed}' was rejected: {e}")
+        return problems
+
     def option_chain(self, underlying: str, expiration: date, side: Side | None,
-                     spot: float, width_pct: float) -> list[OptionCandidate]:
+                     spot: float, width_pct: float, fresh_only: bool = True) -> list[OptionCandidate]:
+        """Contracts near the money. With fresh_only, drops quotes older than
+        max_quote_age_seconds so entries are never priced off a stale market."""
         lo, hi = spot * (1 - width_pct / 100), spot * (1 + width_pct / 100)
         req = OptionChainRequest(
             underlying_symbol=underlying,
@@ -145,11 +163,16 @@ class Broker:
             strike_price_lte=round(hi, 2),
         )
         snaps = self.options.get_option_chain(req)
-        out = []
+        now = datetime.now(timezone.utc)
+        out, stale = [], 0
         for sym, snap in snaps.items():
             occ = parse_occ(sym)
             q = snap.latest_quote
             if occ is None or q is None:
+                continue
+            if fresh_only and q.timestamp is not None and \
+                    (now - q.timestamp).total_seconds() > self.cfg.max_quote_age_seconds:
+                stale += 1
                 continue
             delta = snap.greeks.delta if snap.greeks is not None else None
             out.append(OptionCandidate(
@@ -157,6 +180,8 @@ class Broker:
                 side=occ.side, strike=occ.strike, bid=float(q.bid_price or 0),
                 ask=float(q.ask_price or 0), delta=delta,
             ))
+        if stale:
+            log.debug("%s chain: skipped %d stale quotes", underlying, stale)
         return sorted(out, key=lambda c: (c.side.value, c.strike))
 
     def option_quotes(self, symbols: list[str]) -> dict[str, tuple[float, float]]:
