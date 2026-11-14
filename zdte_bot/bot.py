@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import time as _time
+from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -24,6 +25,42 @@ log = logging.getLogger(__name__)
 ET = ZoneInfo("America/New_York")
 SESSION_OPEN = time(9, 30)
 CLOSE_BUFFER = timedelta(minutes=15)  # on early-close days, flatten this long before the bell
+
+
+@dataclass(frozen=True)
+class DaySchedule:
+    """Today's key times (ET), shared by the trading loop and the dashboard."""
+    session_open: datetime
+    range_end: datetime          # opening range complete; breakouts can trigger from here
+    last_entry: datetime         # no new trades at or after this
+    flatten_at: datetime         # safety flatten (earlier on half-days)
+    close: datetime
+    window_start: datetime | None = None  # midday profit window, if enabled
+    window_end: datetime | None = None
+
+
+def day_schedule(cfg: Config, today: date, next_close: datetime) -> DaySchedule:
+    spread_mode = cfg.mode == "credit_spread"
+    session_open = datetime.combine(today, SESSION_OPEN, tzinfo=ET)
+    close = next_close.astimezone(ET)
+    flatten_at = min(datetime.combine(today, cfg.schedule.flatten_at, tzinfo=ET),
+                     close - CLOSE_BUFFER)
+    entry_cutoff = (cfg.credit_spread.no_new_entries_after if spread_mode
+                    else cfg.schedule.no_new_entries_after)
+    pw = cfg.profit_window
+    if pw.enabled:  # trades need time to work before the window
+        entry_cutoff = min(entry_cutoff, pw.start)
+    minutes = (cfg.credit_spread.opening_range_minutes if spread_mode
+               else cfg.schedule.opening_range_minutes)
+    return DaySchedule(
+        session_open=session_open,
+        range_end=session_open + timedelta(minutes=minutes),
+        last_entry=min(datetime.combine(today, entry_cutoff, tzinfo=ET), flatten_at),
+        flatten_at=flatten_at,
+        close=close,
+        window_start=datetime.combine(today, pw.start, tzinfo=ET) if pw.enabled else None,
+        window_end=datetime.combine(today, pw.end, tzinfo=ET) if pw.enabled else None,
+    )
 
 
 class Bot:
@@ -115,14 +152,8 @@ class Bot:
             return max(60.0, min(wait, 1800.0))
 
         state = self.load_day(today)
-        session_open = datetime.combine(today, SESSION_OPEN, tzinfo=ET)
-        flatten_at = min(datetime.combine(today, self.cfg.schedule.flatten_at, tzinfo=ET),
-                         clock.next_close.astimezone(ET) - CLOSE_BUFFER)
-        entry_cutoff = (self.cfg.credit_spread.no_new_entries_after if self.spread_mode
-                        else self.cfg.schedule.no_new_entries_after)
-        if self.cfg.profit_window.enabled:  # trades need time to work before the window
-            entry_cutoff = min(entry_cutoff, self.cfg.profit_window.start)
-        last_entry = min(datetime.combine(today, entry_cutoff, tzinfo=ET), flatten_at)
+        sched = day_schedule(self.cfg, today, clock.next_close)
+        session_open, flatten_at, last_entry = sched.session_open, sched.flatten_at, sched.last_entry
         if today.isoformat() in self.cfg.skip_dates:
             if not self._skip_logged:
                 log.info("%s is in skip_dates: managing open positions only, no new trades.", today)

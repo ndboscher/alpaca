@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "zdte-bot"
-version = "0.2.0"
+version = "0.3.0"
 description = "0DTE options trading bot for major ETFs (SPY, QQQ, IWM) on Alpaca"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -12,6 +12,7 @@ dependencies = [
     "alpaca-py>=0.40",
     "python-dotenv>=1.0",
     "PyYAML>=6.0",
+    "rich>=13.0",
     "tzdata>=2024.1",
 ]
 

@@ -120,6 +120,8 @@ Use `./run.sh <command>` on macOS/Linux or `.\run.ps1 <command>` on Windows:
 | `run --dry-run` | Full bot on live market data, but **orders are only simulated** |
 | `run` | Trades on your account (paper unless you've switched to live) |
 | `run --exit-after-close` | Same, but quits when the session ends (for schedulers) |
+| `run --dashboard` | Runs the bot with the live dashboard in the same window |
+| `dashboard` | Live dashboard only (read-only); run the bot in another window |
 | `status` | Today's P&L and open option positions |
 | `flatten` | Closes the bot's 0DTE positions at market (asks for confirmation) |
 
@@ -134,6 +136,32 @@ A sensible first day:
 Start the bot before 9:30 ET, or any time during the session. If it's started outside market hours
 it waits for the next open. Stop it with **Ctrl+C**. Stopping does **not** close positions, so
 use `flatten` if needed.
+
+### Dashboard
+
+```bash
+./run.sh run --dashboard        # bot + dashboard in one window
+./run.sh dashboard              # or: dashboard in a second window while `run` goes in the first
+./run.sh dashboard --dry-run    # watch a bot started with `run --dry-run`
+```
+
+The dashboard redraws every second and refreshes its data every `poll_seconds` (at least 5s).
+It shows:
+
+- **Header:** paper or live, the current phase of the day (building the opening range, watching
+  for breakouts, profit window, flat) with a countdown to the next one, and how long ago the bot
+  last wrote to its log. It warns you if the bot looks stopped.
+- **Account:** equity, today's P&L, how much of the daily loss limit is used, trades and open
+  positions against their limits.
+- **Today:** the day's timetable, with completed steps ticked off.
+- **Market:** each ETF's price, opening range, VWAP and what the bot sees ("inside range, 0.12%
+  to high", "BREAKOUT ▲ → buy call", "range too wide, sitting out").
+- **Positions:** live P&L for each trade and the prices where it will exit (target, stop and
+  trailing stop, or for spreads the cost-to-close levels and short strike).
+- **Today's orders and the bot log:** the log panel shrinks to fit smaller windows.
+
+It never places or cancels orders, so you can open and close it freely. With `run --dashboard`,
+pressing Ctrl+C stops the bot too, and positions stay open, just like stopping `run`.
 
 > Your computer must stay awake and online while the bot runs. For hands-off running, use a
 > small always-on machine or cloud VM (see *Running unattended* below).
@@ -220,7 +248,8 @@ it sleeps through closed markets.
 
 ```
 zdte_bot/
-  cli.py        command-line entry point (zdte check/run/chain/status/flatten)
+  cli.py        command-line entry point (zdte check/run/chain/status/flatten/dashboard)
+  dashboard.py  live terminal dashboard (read-only)
   bot.py        main loop: schedule, exits, entries, persistence
   strategy.py   opening range + VWAP breakout signal (pure functions)
   contracts.py  pick the 0DTE contract to buy (long_options)
