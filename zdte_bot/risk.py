@@ -9,6 +9,7 @@ from datetime import time
 from .config import ProfitWindowCfg, RiskCfg
 
 CONTRACT_MULTIPLIER = 100
+STOP_PREFIX = "stop loss"  # exit reasons starting with this are subject to stop_confirm_checks
 
 
 def position_size(price: float, cfg: RiskCfg, buying_power: float) -> int:
@@ -46,7 +47,7 @@ def exit_reason(entry: float, current: float, high_water: float, cfg: RiskCfg) -
     if change >= cfg.take_profit_pct:
         return f"take profit ({change:+.1f}%)"
     if change <= -cfg.stop_loss_pct:
-        return f"stop loss ({change:+.1f}%)"
+        return f"{STOP_PREFIX} ({change:+.1f}%)"
     peak_gain = (high_water - entry) / entry * 100
     if peak_gain >= cfg.trailing_activate_pct:
         drawdown = (high_water - current) / high_water * 100
@@ -63,4 +64,13 @@ def window_exit_reason(pnl_pct: float, now: time, cfg: ProfitWindowCfg) -> str |
         return f"profit window closed at {cfg.end:%H:%M} ({pnl_pct:+.1f}%)"
     if pnl_pct >= cfg.min_profit_pct:
         return f"lock in profit after {cfg.start:%H:%M} ({pnl_pct:+.1f}%)"
+    return None
+
+
+def underlying_stop_reason(side: str, level: float, close: float) -> str | None:
+    """`side` is the option bought ("call"/"put"); `close` the ETF's last completed 1-min close."""
+    if side == "call" and close < level:
+        return f"breakout failed: ETF closed {close:.2f} below {level:.2f}"
+    if side == "put" and close > level:
+        return f"breakout failed: ETF closed {close:.2f} above {level:.2f}"
     return None

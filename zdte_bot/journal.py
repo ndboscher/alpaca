@@ -43,6 +43,11 @@ class DayState:
     # Credit spreads the bot opened: {"SHORT/LONG": {underlying, side, short, long,
     # short_strike, qty, credit}}. Alpaca reports legs separately, so we pair them here.
     spreads: dict[str, dict] = field(default_factory=dict)
+    # Long options: {option_symbol: {"underlying", "side", "level"}}: the ETF price that
+    # means the breakout failed (see risk.underlying_stop).
+    stop_levels: dict[str, dict] = field(default_factory=dict)
+    # Consecutive checks a position has shown its price stop (see risk.stop_confirm_checks).
+    stop_hits: dict[str, int] = field(default_factory=dict)
 
     @classmethod
     def load(cls, folder: Path, today: date) -> "DayState":

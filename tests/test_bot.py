@@ -19,7 +19,7 @@ class FakeBroker:
         self.quotes: dict[str, tuple[float, float]] = {}
         self.orders: list[tuple] = []
         self.pnl = 0.0
-        closes = [500.0] * 15 + [500.3, 500.8]
+        closes = [500.0] * 15 + [500.5, 500.8]
         self.bars = [Bar(OPEN + timedelta(minutes=i), c, c + 0.1, c - 0.1, c, 1000)
                      for i, c in enumerate(closes)]
 
@@ -163,3 +163,52 @@ def test_profit_window_time_stop_and_no_late_entries(tmp_path):
     late.now = datetime(2026, 10, 6, 11, 5, tzinfo=ET)
     make_bot(tmp_path / "late", late).tick()
     assert late.orders == []                      # entries stop at window start
+
+
+# ---- stops: ETF-based main stop, confirmed price backstop ---------------------
+
+def _entered(tmp_path):
+    broker = FakeBroker()
+    bot = make_bot(tmp_path, broker)
+    bot.tick()
+    return broker, bot, broker.orders[0][1]
+
+
+def test_entry_records_etf_stop_at_range_mid(tmp_path):
+    broker, bot, sym = _entered(tmp_path)
+    assert bot.state.stop_levels[sym] == {"underlying": "SPY", "side": "call", "level": 500.0}
+
+
+def test_option_dip_alone_does_not_stop_out(tmp_path):
+    # -40% on the option used to trip the old 35% stop; the ETF is still above the range mid.
+    broker, bot, sym = _entered(tmp_path)
+    broker.quotes[sym] = (0.60, 0.62)
+    for _ in range(5):
+        bot.tick()
+    assert len(broker.orders) == 1
+
+
+def test_etf_closing_back_into_range_stops_out(tmp_path):
+    broker, bot, sym = _entered(tmp_path)
+    broker.quotes[sym] = (0.90, 0.92)
+    broker.bars.append(Bar(broker.bars[-1].ts + timedelta(minutes=1), 499.95, 500.0, 499.9,
+                           499.95, 1000))
+    bot.tick()
+    assert broker.orders[-1][:2] == ("SELL", sym)
+    assert sym not in bot.state.stop_levels
+
+
+def test_price_backstop_needs_consecutive_checks(tmp_path):
+    broker, bot, sym = _entered(tmp_path)
+    broker.quotes[sym] = (0.35, 0.37)          # -65%: beyond the 60% backstop
+    bot.tick()
+    bot.tick()
+    assert len(broker.orders) == 1             # 2 of 3 checks
+    broker.quotes[sym] = (0.90, 0.92)          # quote recovers: count resets
+    bot.tick()
+    broker.quotes[sym] = (0.35, 0.37)
+    bot.tick()
+    bot.tick()
+    assert len(broker.orders) == 1
+    bot.tick()
+    assert broker.orders[-1][:2] == ("SELL", sym)

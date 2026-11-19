@@ -60,6 +60,7 @@ strategy:
   require_vwap_confirm: true  # calls need price > VWAP, puts need price < VWAP
   max_range_pct: 1.0          # skip a symbol if its opening range is wider than this % (choppy open)
   max_entries_per_symbol: 1   # per day
+  confirm_bars: 2             # need this many 1-min closes in a row beyond the range (filters fake-outs)
 
 # Used when mode: credit_spread. Defaults follow the published "60-minute ORB" 0DTE bot,
 # scaled from SPX to SPY-sized strikes.
@@ -89,7 +90,13 @@ risk:   # trade/position/daily limits apply to both modes; the rest is long_opti
   max_trades_per_day: 4
   max_daily_loss_usd: 500     # stop opening trades (and flatten) once the account is down this much today
   take_profit_pct: 50         # exit when option is up this % from entry
-  stop_loss_pct: 35           # exit when option is down this % from entry
+  # Main stop: exit when the ETF itself closes back through this level, meaning the breakout
+  # failed. range_mid (default), range_far_edge (wider), or off.
+  underlying_stop: range_mid
+  # Backstop on the option price. A 0DTE option can drop 35% on a 0.2% ETF wiggle, so a tight
+  # %-stop sells on noise. This must also show on several checks in a row to count.
+  stop_loss_pct: 60
+  stop_confirm_checks: 3      # consecutive checks (poll_seconds apart); also used for credit-spread stops
   trailing_activate_pct: 30   # once up this %, start trailing...
   trailing_stop_pct: 20       # ...and exit if it falls this % from its high
 

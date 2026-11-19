@@ -79,11 +79,11 @@ def test_status_building_range():
 
 
 def test_status_breakout_and_inside():
-    assert status(FLAT + [500.3, 500.8], at(9, 47)).startswith("BREAKOUT ▲ → buy call")
+    assert status(FLAT + [500.5, 500.8], at(9, 47)).startswith("BREAKOUT ▲ → buy call")
     assert status(FLAT + [500.0, 500.01], at(9, 47)).startswith("inside range")
     cfg = Config(mode="credit_spread")  # 60-minute range, must be at least 0.2% wide
     swing = [499.0, 500.5] * 30
-    assert status(swing + [503.0], at(10, 31), cfg) == "BREAKOUT ▲ → sell put spread"
+    assert status(swing + [503.0, 503.2], at(10, 32), cfg) == "BREAKOUT ▲ → sell put spread"
     assert status([500.0] * 60 + [503.0], at(10, 31), cfg).startswith("range 0.02% too narrow")
 
 

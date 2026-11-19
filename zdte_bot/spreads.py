@@ -13,7 +13,7 @@ from dataclasses import dataclass
 
 from .config import ContractsCfg, CreditSpreadCfg
 from .models import OptionCandidate, Side
-from .risk import CONTRACT_MULTIPLIER
+from .risk import CONTRACT_MULTIPLIER, STOP_PREFIX
 from .strategy import Signal
 
 
@@ -98,7 +98,7 @@ def spread_exit_reason(credit: float, cost_to_close: float, spot: float | None, 
     if captured >= cfg.profit_target_pct:
         return f"take profit ({captured:.0f}% of credit kept)"
     if -captured >= cfg.stop_loss_pct:
-        return f"stop loss (loss = {-captured:.0f}% of credit)"
+        return f"{STOP_PREFIX} (loss = {-captured:.0f}% of credit)"
     if cfg.exit_on_short_strike_breach and spot is not None:
         if (side == Side.PUT and spot < short_strike) or (side == Side.CALL and spot > short_strike):
             return f"underlying {spot:.2f} breached short strike {short_strike:g}"

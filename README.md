@@ -18,10 +18,17 @@ low (the *opening range*), then waits for a 1-minute bar to close outside it, co
 Pick a strategy with `mode:` in `config.yaml`:
 
 ### `mode: long_options` (default): buy a call or put
-1. Uses a 15-minute opening range. A breakout above it buys a **call**; a breakout below buys a **put**.
+1. Uses a 15-minute opening range. Two 1-minute closes in a row above it buy a **call**; below it buy a **put**.
 2. It picks the 0DTE contract nearest **0.40 delta** that has a tight spread and a sensible premium,
    and sizes the trade to `max_position_usd`.
-3. Exits: **+50% take profit**, **−35% stop**, and a **trailing stop** (once up 30%, exit if it falls 20% from its high).
+3. Exits: **+50% take profit**, and a **trailing stop** (once up 30%, exit if it falls 20% from its high).
+4. **Stop: the breakout failed.** If the ETF closes a 1-minute bar back past the middle of the
+   opening range, the bot sells. A −60% option-price backstop also applies, but only if it shows
+   on 3 checks in a row.
+
+   Why not a tight % stop on the option? A 0.40-delta 0DTE option loses ~35% when SPY moves
+   just 0.2% (about $1.20), which is ordinary noise. A tight premium stop sells on wiggles
+   even when the breakout later works.
 
 ### `mode: credit_spread`: sell a defined-risk spread (needs options level 3)
 Modelled on the most widely published 0DTE bot, the "60-minute ORB":
@@ -281,6 +288,11 @@ git pull
 ```
 New settings added to `config.example.yaml` use built-in defaults until you copy them into
 your `config.yaml`.
+
+**Upgrading to 0.4.0 (stop-loss fix):** your `config.yaml` still has the old
+`stop_loss_pct: 35` under `risk:`. Change it to `60`. Then add `underlying_stop: range_mid`
+and `stop_confirm_checks: 3` under `risk:`, and `confirm_bars: 2` under `strategy:` (or copy
+those lines from `config.example.yaml`). The last three already default to those values if missing.
 
 **Upgrading from 0.1.0:** if your `config.yaml` has `flatten_at: "15:30"`, the bot will refuse to
 start. Change it to `"15:15"`, because Alpaca rejects orders on expiring contracts after 15:30.

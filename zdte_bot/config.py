@@ -23,6 +23,7 @@ LATEST_FLATTEN = time(15, 25)
 FREE_PLAN_MIN_POLL = 10  # seconds; faster polling can exceed the free plan's 200 calls/min
 
 MODES = ("long_options", "credit_spread")
+UNDERLYING_STOPS = ("range_mid", "range_far_edge", "off")
 
 
 @dataclass
@@ -54,6 +55,7 @@ class StrategyCfg:
     require_vwap_confirm: bool = True
     max_range_pct: float = 1.0
     max_entries_per_symbol: int = 1
+    confirm_bars: int = 2  # consecutive 1-min closes beyond the range needed for a breakout
 
 
 @dataclass
@@ -88,7 +90,13 @@ class RiskCfg:
     max_trades_per_day: int = 4
     max_daily_loss_usd: float = 500
     take_profit_pct: float = 50
-    stop_loss_pct: float = 35
+    # Main stop: exit when the ETF itself closes back through this opening-range level, i.e.
+    # the breakout has failed. range_mid | range_far_edge | off
+    underlying_stop: str = "range_mid"
+    # Backstop on the option price. A 0.40-delta 0DTE option moves ~35% on a 0.2% ETF wiggle,
+    # so this sits wide and must show on several consecutive checks to count.
+    stop_loss_pct: float = 60
+    stop_confirm_checks: int = 3
     trailing_activate_pct: float = 30
     trailing_stop_pct: float = 20
 
@@ -186,6 +194,10 @@ def _validate(cfg: Config) -> None:
         raise ConfigError("max_quote_age_seconds must be positive")
     if cfg.schedule.flatten_at <= cfg.schedule.no_new_entries_after:
         raise ConfigError("schedule.flatten_at must be after schedule.no_new_entries_after")
+    if cfg.risk.underlying_stop not in UNDERLYING_STOPS:
+        raise ConfigError(f"risk.underlying_stop must be one of {', '.join(UNDERLYING_STOPS)}")
+    if cfg.risk.stop_confirm_checks < 1 or cfg.strategy.confirm_bars < 1:
+        raise ConfigError("risk.stop_confirm_checks and strategy.confirm_bars must be at least 1")
     pw = cfg.profit_window
     if pw.enabled and not pw.start < pw.end <= cfg.schedule.flatten_at:
         raise ConfigError("profit_window: need start < end <= schedule.flatten_at")

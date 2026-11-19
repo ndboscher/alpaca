@@ -51,6 +51,20 @@ def vwap(bars: list[Bar]) -> float | None:
     return sum((b.high + b.low + b.close) / 3 * b.volume for b in bars) / vol
 
 
+def closed_bars(bars: list[Bar], now: datetime) -> list[Bar]:
+    """Drop the bar for the minute still in progress, whose close isn't final yet."""
+    return [b for b in bars if b.ts + timedelta(minutes=1) <= now]
+
+
+def stop_level(signal: Signal, mode: str) -> float | None:
+    """ETF price that proves the breakout failed: back to the range midpoint or far edge."""
+    if mode == "range_mid":
+        return signal.range.mid
+    if mode == "range_far_edge":
+        return signal.range.low if signal.side == Side.CALL else signal.range.high
+    return None
+
+
 def breakout_signal(bars: list[Bar], session_open: datetime, range_minutes: int,
                     cfg: StrategyCfg, min_range_pct: float = 0.0,
                     max_range_pct: float | None = None) -> Signal | None:
@@ -70,13 +84,18 @@ def breakout_signal(bars: list[Bar], session_open: datetime, range_minutes: int,
     last = session[-1]
     buffer = rng.mid * cfg.breakout_buffer_pct / 100
     vw = vwap(session)
+    # The last `confirm_bars` closes must all be beyond the level, and all after the range.
+    recent = session[-cfg.confirm_bars:]
+    range_end = session_open + timedelta(minutes=range_minutes)
+    if len(recent) < cfg.confirm_bars or recent[0].ts < range_end:
+        return None
 
-    if last.close > rng.high + buffer:
+    if all(b.close > rng.high + buffer for b in recent):
         if cfg.require_vwap_confirm and vw is not None and last.close <= vw:
             return None
         return Signal(Side.CALL, last.close,
                       f"close {last.close:.2f} > OR high {rng.high:.2f} (vwap {vw or 0:.2f})", rng)
-    if last.close < rng.low - buffer:
+    if all(b.close < rng.low - buffer for b in recent):
         if cfg.require_vwap_confirm and vw is not None and last.close >= vw:
             return None
         return Signal(Side.PUT, last.close,

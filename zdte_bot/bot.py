@@ -16,9 +16,17 @@ from .config import EXPIRY_ORDER_CUTOFF, Config
 from .contracts import select_contract
 from .journal import DayState, Journal
 from .models import Side, parse_occ
-from .risk import DayStats, entry_block_reason, exit_reason, position_size, window_exit_reason
+from .risk import (
+    STOP_PREFIX,
+    DayStats,
+    entry_block_reason,
+    exit_reason,
+    position_size,
+    underlying_stop_reason,
+    window_exit_reason,
+)
 from .spreads import select_credit_spread, spread_exit_reason, spread_side_for, spread_size
-from .strategy import breakout_signal
+from .strategy import breakout_signal, closed_bars, stop_level
 
 log = logging.getLogger(__name__)
 
@@ -118,6 +126,8 @@ class Bot:
                 self.state.paper_positions.pop(pos.symbol, None)
         if res.filled_qty >= pos.qty:
             self.state.high_water.pop(pos.symbol, None)
+            self.state.stop_levels.pop(pos.symbol, None)
+            self.state.stop_hits.pop(pos.symbol, None)
 
     def flatten(self, positions: list[OptionPosition], reason: str) -> None:
         if not positions:
@@ -196,24 +206,63 @@ class Bot:
 
         # 2. Manage open positions.
         quotes = self._quotes([p.symbol for p in positions])
+        closes = self._last_closes({state.stop_levels[p.symbol]["underlying"] for p in positions
+                                    if p.symbol in state.stop_levels}, now)
         for p in positions:
             bid, ask = quotes.get(p.symbol, (0.0, 0.0))
             mark = (bid + ask) / 2 if bid > 0 and ask > 0 else (p.current_price or 0)
-            if mark <= 0:
+            stop = state.stop_levels.get(p.symbol)
+            reason = None
+            if stop and (close := closes.get(stop["underlying"])) is not None:
+                reason = underlying_stop_reason(stop["side"], stop["level"], close)
+            if mark <= 0 and not reason:
                 continue
-            hw = max(state.high_water.get(p.symbol, p.avg_entry), mark)
-            state.high_water[p.symbol] = hw
-            pnl_pct = (mark - p.avg_entry) / p.avg_entry * 100
-            reason = (exit_reason(p.avg_entry, mark, hw, self.cfg.risk)
-                      or window_exit_reason(pnl_pct, now.time(), self.cfg.profit_window))
-            log.info("HOLD %s x%d entry %.2f mark %.2f (%+.1f%%)", p.symbol, p.qty, p.avg_entry,
-                     mark, pnl_pct)
+            if mark > 0:
+                hw = max(state.high_water.get(p.symbol, p.avg_entry), mark)
+                state.high_water[p.symbol] = hw
+                pnl_pct = (mark - p.avg_entry) / p.avg_entry * 100
+                reason = reason or self._confirmed(p.symbol, exit_reason(p.avg_entry, mark, hw, self.cfg.risk))
+                reason = reason or window_exit_reason(pnl_pct, now.time(), self.cfg.profit_window)
+                log.info("HOLD %s x%d entry %.2f mark %.2f (%+.1f%%)%s", p.symbol, p.qty,
+                         p.avg_entry, mark, pnl_pct,
+                         f" stop if {stop['underlying']} closes {'<' if stop['side'] == 'call' else '>'} "
+                         f"{stop['level']:.2f}" if stop else "")
             if reason:
                 self._close(p, reason, bid)
 
         # 3. Look for new entries.
         if now < last_entry:
-            self._scan_entries(session_open, today, stats, account.options_buying_power)
+            self._scan_entries(session_open, today, stats, account.options_buying_power, now)
+
+    def _confirmed(self, key: str, reason: str | None) -> str | None:
+        """Price stops must show on `stop_confirm_checks` consecutive checks, so a single bad
+        quote or a momentary spread blow-out doesn't sell at the low. Other exits pass through."""
+        hits = self.state.stop_hits
+        if not reason or not reason.startswith(STOP_PREFIX):
+            hits.pop(key, None)
+            return reason
+        hits[key] = hits.get(key, 0) + 1
+        need = self.cfg.risk.stop_confirm_checks
+        if hits[key] < need:
+            log.info("  %s: %s (check %d/%d, waiting for confirmation)", key, reason, hits[key], need)
+            return None
+        return reason
+
+    def _last_closes(self, symbols: set[str], now: datetime) -> dict[str, float]:
+        """Latest completed 1-minute close for each ETF."""
+        if not symbols:
+            return {}
+        try:
+            bars = self.broker.minute_bars(sorted(symbols), now - timedelta(minutes=10))
+        except APIError as e:
+            log.warning("Could not fetch ETF bars for stops: %s", e)
+            return {}
+        out = {}
+        for sym, b in bars.items():
+            done = closed_bars(b, now)
+            if done:
+                out[sym] = done[-1].close
+        return out
 
     # ---- credit spreads --------------------------------------------------
 
@@ -242,14 +291,15 @@ class Bot:
                 log.info("HOLD %s x%d credit %.2f cost-to-close %.2f spot %s", key, sp["qty"],
                          sp["credit"], cost, f"{spot:.2f}" if spot else "?")
                 captured_pct = (sp["credit"] - cost) / sp["credit"] * 100
-                reason = (spread_exit_reason(sp["credit"], cost, spot, Side(sp["side"]),
-                                             sp["short_strike"], self.cfg.credit_spread)
+                reason = (self._confirmed(key, spread_exit_reason(
+                              sp["credit"], cost, spot, Side(sp["side"]), sp["short_strike"],
+                              self.cfg.credit_spread))
                           or window_exit_reason(captured_pct, now.time(), self.cfg.profit_window))
                 if reason:
                     self._close_spread(key, reason, natural_debit=max(0.01, sa - lb))
 
         if now < last_entry:
-            self._scan_spread_entries(session_open, today, stats, account.options_buying_power)
+            self._scan_spread_entries(session_open, today, stats, account.options_buying_power, now)
 
     def _spots(self, symbols: set[str]) -> dict[str, float]:
         out = {}
@@ -291,6 +341,7 @@ class Bot:
         self.journal.record("CLOSE_SPREAD", key, res.filled_qty, price, reason, self.dry_run)
         if res.filled_qty >= sp["qty"]:
             del self.state.spreads[key]
+            self.state.stop_hits.pop(key, None)
         else:
             sp["qty"] -= res.filled_qty
             log.warning("Only %d of %s closed; will retry next loop", res.filled_qty, key)
@@ -316,7 +367,7 @@ class Bot:
             self.journal.record("CLOSE", p.symbol, abs(p.qty), None, reason, self.dry_run)
 
     def _scan_spread_entries(self, session_open: datetime, today: date, stats: DayStats,
-                             buying_power: float) -> None:
+                             buying_power: float, now: datetime) -> None:
         state, cs = self.state, self.cfg.credit_spread
         if (block := entry_block_reason(stats, self.cfg.risk)) is not None:
             log.debug("No new entries: %s", block)
@@ -330,7 +381,8 @@ class Bot:
         if not candidates:
             return
 
-        bars = self.broker.minute_bars(candidates, session_open)
+        bars = {k: closed_bars(v, now) for k, v in
+                self.broker.minute_bars(candidates, session_open).items()}
         for sym in candidates:
             signal = breakout_signal(bars.get(sym, []), session_open, cs.opening_range_minutes,
                                      self.cfg.strategy, cs.min_range_pct, cs.max_range_pct)
@@ -384,7 +436,7 @@ class Bot:
     # ---- long calls/puts entries -----------------------------------------
 
     def _scan_entries(self, session_open: datetime, today: date, stats: DayStats,
-                      buying_power: float) -> None:
+                      buying_power: float, now: datetime) -> None:
         state = self.state
         if (block := entry_block_reason(stats, self.cfg.risk)) is not None:
             log.debug("No new entries: %s", block)
@@ -399,7 +451,8 @@ class Bot:
         if not candidates:
             return
 
-        bars = self.broker.minute_bars(candidates, session_open)
+        bars = {k: closed_bars(v, now) for k, v in
+                self.broker.minute_bars(candidates, session_open).items()}
         for sym in candidates:
             signal = breakout_signal(bars.get(sym, []), session_open,
                                      self.cfg.schedule.opening_range_minutes, self.cfg.strategy)
@@ -436,6 +489,11 @@ class Bot:
             fill = res.avg_price or limit
             buying_power -= fill * 100 * res.filled_qty
             state.high_water[contract.symbol] = fill
+            if (level := stop_level(signal, self.cfg.risk.underlying_stop)) is not None:
+                state.stop_levels[contract.symbol] = {"underlying": sym, "side": signal.side.value,
+                                                      "level": round(level, 2)}
+                log.info("  stop if %s closes %s %.2f (breakout failed)", sym,
+                         "below" if signal.side.value == "call" else "above", level)
             if self.dry_run:
                 state.paper_positions[contract.symbol] = {"qty": res.filled_qty, "entry": fill}
             self.journal.record("BUY", contract.symbol, res.filled_qty, fill,

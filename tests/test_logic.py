@@ -44,11 +44,11 @@ def test_vwap():
 
 def test_breakout_call_and_put():
     cfg = StrategyCfg(breakout_buffer_pct=0.05, require_vwap_confirm=True, max_range_pct=1.0)
-    up = bars_from([100.0] * 15 + [100.1, 100.4])
+    up = bars_from([100.0] * 15 + [100.15, 100.4])
     sig = breakout_signal(up, OPEN, 15, cfg)
     assert sig is not None and sig.side == Side.CALL
 
-    down = bars_from([100.0] * 15 + [99.9, 99.6])
+    down = bars_from([100.0] * 15 + [99.85, 99.6])
     sig = breakout_signal(down, OPEN, 15, cfg)
     assert sig is not None and sig.side == Side.PUT
 
@@ -180,4 +180,46 @@ def test_profit_window_validation(tmp_path):
     p = tmp_path / "c.yaml"
     p.write_text('profit_window:\n  start: "13:00"\n  end: "11:00"\n')
     with pytest.raises(ConfigError, match="profit_window"):
+        load_config(p, tmp_path / "none.env", require_keys=False)
+
+
+# ---- breakout confirmation and ETF-based stops --------------------------------
+
+def test_breakout_needs_consecutive_closes():
+    cfg = StrategyCfg(breakout_buffer_pct=0.05, require_vwap_confirm=False, confirm_bars=2)
+    one = bars_from([100.0] * 15 + [100.0, 100.4])          # only the last close is out
+    assert breakout_signal(one, OPEN, 15, cfg) is None
+    two = bars_from([100.0] * 15 + [100.3, 100.4])
+    assert breakout_signal(two, OPEN, 15, cfg).side == Side.CALL
+    # A close inside the range window can't count toward confirmation.
+    early = bars_from([100.0] * 14 + [100.04, 100.4])
+    assert breakout_signal(early, OPEN, 15, StrategyCfg(confirm_bars=2, require_vwap_confirm=False,
+                                                         breakout_buffer_pct=0.0)) is None
+
+
+def test_closed_bars_drops_current_minute():
+    from zdte_bot.strategy import closed_bars
+    bars = bars_from([100.0, 100.1, 100.2])                 # 9:30, 9:31, 9:32
+    assert len(closed_bars(bars, OPEN + timedelta(minutes=2, seconds=30))) == 2
+    assert len(closed_bars(bars, OPEN + timedelta(minutes=3))) == 3
+
+
+def test_stop_level_and_reason():
+    from zdte_bot.risk import underlying_stop_reason
+    from zdte_bot.strategy import OpeningRange, Signal, stop_level
+    rng = OpeningRange(high=101.0, low=99.0)
+    call = Signal(Side.CALL, 101.2, "", rng)
+    put = Signal(Side.PUT, 98.8, "", rng)
+    assert stop_level(call, "range_mid") == 100.0
+    assert stop_level(call, "range_far_edge") == 99.0 and stop_level(put, "range_far_edge") == 101.0
+    assert stop_level(call, "off") is None
+    assert underlying_stop_reason("call", 100.0, 100.5) is None
+    assert "failed" in underlying_stop_reason("call", 100.0, 99.9)
+    assert "failed" in underlying_stop_reason("put", 100.0, 100.1)
+
+
+def test_underlying_stop_config_validated(tmp_path):
+    p = tmp_path / "c.yaml"
+    p.write_text("risk:\n  underlying_stop: vibes\n")
+    with pytest.raises(ConfigError, match="underlying_stop"):
         load_config(p, tmp_path / "none.env", require_keys=False)

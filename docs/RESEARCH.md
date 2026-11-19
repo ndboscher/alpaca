@@ -134,6 +134,34 @@ Reasoning: 0DTE theta (time decay) accelerates into the afternoon, which works a
 long options. For credit spreads it gives up some afternoon decay in exchange for less
 exposure to late-day reversals. Whether it helps is a backtest question (roadmap item 1).
 
+## 7. Why the bot kept hitting its stop (Nov 2026)
+
+The owner reported repeated stop-outs in `long_options` mode. The old stop was −35% on the
+option's mid price, checked every 5 seconds. Black-Scholes for a typical entry (SPY $600,
+15% IV, 0.40-delta call, 4–5.5 h to expiry, price ~$1.30–1.60):
+
+| Hours left | SPY move that takes the option to −35% within 15 min | SPY's 1-σ move for the rest of the day |
+|---|---|---|
+| 5.5 h | −$1.41 (−0.23%) | $5.22 |
+| 4.0 h | −$1.14 (−0.19%) | $4.45 |
+
+So the stop sat at roughly a quarter of a normal day's move, and 0DTE gamma magnifies every
+tick. On top of that, the breakout fired on a single 1-minute close only 0.05% past the range,
+and retests of the breakout level are common. Many trades were stopped out by noise, not by a
+failed setup.
+
+Changes:
+- **Main stop is now the ETF, not the option:** exit when a completed 1-minute ETF bar closes
+  back past the opening-range midpoint (`risk.underlying_stop`). That is the price at which the
+  breakout idea is actually wrong.
+- **Option-price stop is a backstop:** −60%, and it must show on 3 consecutive checks
+  (`risk.stop_confirm_checks`) so one bad quote or a momentary spread blow-out can't sell at the low.
+- **Breakout needs 2 consecutive closes** beyond the range (`strategy.confirm_bars`).
+- **Signals and stops ignore the minute still in progress**, whose "close" isn't final yet.
+
+These changes rest on the option math above, not on the owner's trade log. They should be
+checked against `logs/trades.csv` and, better, a backtest (roadmap item 1).
+
 ## Roadmap suggested by this research
 
 1. **Backtester:** replay historical 1-minute bars plus option quotes (Alpaca historical

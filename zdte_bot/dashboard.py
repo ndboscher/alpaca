@@ -365,7 +365,11 @@ def _positions_table(snap: Snapshot, cfg: Config) -> Panel:
         for p in sorted(snap.positions, key=lambda p: p.symbol):
             mark = _mid(snap.quotes.get(p.symbol)) or p.current_price
             tp, sl = p.avg_entry * (1 + r.take_profit_pct / 100), p.avg_entry * (1 - r.stop_loss_pct / 100)
-            exits = f"{tp:.2f} target · {sl:.2f} stop"
+            exits = f"{tp:.2f} target · {sl:.2f} backstop"
+            stop = snap.state.stop_levels.get(p.symbol) if snap.state else None
+            if stop:
+                exits = (f"{stop['underlying']} {'<' if stop['side'] == 'call' else '>'}"
+                         f"{stop['level']:.2f} stop · " + exits)
             hw = snap.state.high_water.get(p.symbol) if snap.state else None
             if hw and p.avg_entry and (hw - p.avg_entry) / p.avg_entry * 100 >= r.trailing_activate_pct:
                 exits += f" · trail {hw * (1 - r.trailing_stop_pct / 100):.2f}"
